@@ -6,6 +6,8 @@ AI Virtual Fitting Service Backend - Transform model photos with AI-powered garm
 
 - 🎨 AI-powered virtual try-on using Replicate (IDM-VTON model)
 - 📸 Multi-image upload support (model, garment, background)
+- 🧠 Intelligent person detection and auto-cropping (YOLO)
+- 👥 Multi-person photo support with smart selection
 - 💾 SQLite database for generation history
 - 🔄 Background processing with status polling
 - 📊 Pagination and history management
@@ -58,13 +60,26 @@ npm start
 Create a new virtual try-on generation.
 
 **Request**: `multipart/form-data`
-- `model_image` (file, required) - Model photo
+- `model_image` (file, required) - Model photo (supports multi-person photos)
 - `garment_image` (file, required) - Garment photo
 - `background_image` (file, optional) - Background photo
 - `background_prompt` (string, optional) - Background description
+- `person_description` (string, optional) - Target person selection hint (e.g., "왼쪽", "오른쪽", "가운데", "첫번째")
 - `steps` (number, default: 12) - Inference steps
 - `guidance_scale` (number, default: 2.5) - Guidance scale
 - `seed` (number, optional) - Random seed
+
+**Person Selection**:
+- Single person: Automatically detected and cropped
+- Multiple persons: 
+  - Default: Largest/most prominent person
+  - With `person_description`:
+    - "왼쪽" or "left" → Leftmost person
+    - "오른쪽" or "right" → Rightmost person
+    - "가운데" or "center" → Center person
+    - "첫번째" or "first" → First person from left
+    - "두번째" or "second" → Second person from left
+- No person detected: Returns friendly error message
 
 **Response**:
 ```json
@@ -183,12 +198,14 @@ styleroom-api/
 │   ├── db/
 │   │   └── index.ts          # Database operations
 │   ├── services/
-│   │   └── replicate.ts      # Replicate API integration
+│   │   ├── replicate.ts      # Replicate API integration
+│   │   └── preprocess.ts     # Image preprocessing (YOLO person detection)
 │   ├── routes/
 │   │   ├── generate.ts       # Generation endpoints
 │   │   └── history.ts        # History endpoints
 │   ├── __tests__/
-│   │   └── api.test.ts       # API tests
+│   │   ├── api.test.ts       # API tests
+│   │   └── preprocess.test.ts # Preprocessing tests
 │   └── index.ts              # Express app
 ├── uploads/                  # Uploaded images
 ├── results/                  # Generated results
