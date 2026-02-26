@@ -68,6 +68,7 @@ export const updateGeneration = (id: number, data: {
   result_image?: string;
   replicate_id?: string;
   error?: string;
+  background_prompt?: string;
 }) => {
   const fields = Object.keys(data).map(k => `${k} = ?`).join(', ');
   const values = Object.values(data);

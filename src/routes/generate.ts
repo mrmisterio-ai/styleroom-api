@@ -11,6 +11,7 @@ import {
   GenerationParams 
 } from '../db';
 import { runVTON, getPrediction, downloadImage } from '../services/replicate';
+import { preprocessModelImage } from '../services/preprocess';
 
 const router = Router();
 
@@ -64,6 +65,7 @@ router.post('/', upload.fields([
     const garmentImage = files.garment_image[0].path;
     const backgroundImage = files.background_image?.[0]?.path;
     const backgroundPrompt = req.body.background_prompt;
+    const personDescription = req.body.person_description; // 새 필드
 
     const params: GenerationParams = {
       steps: parseInt(req.body.steps) || 12,
@@ -79,6 +81,16 @@ router.post('/', upload.fields([
       background_prompt: backgroundPrompt,
       params,
     });
+
+    // 전처리된 이미지 경로를 전달하기 위해 추가 데이터 저장
+    // (간단하게 하기 위해 background_prompt에 person_description 추가)
+    if (personDescription) {
+      updateGeneration(generationId, { 
+        background_prompt: backgroundPrompt 
+          ? `${backgroundPrompt} [person: ${personDescription}]`
+          : `[person: ${personDescription}]`
+      });
+    }
 
     // Start async processing
     processGeneration(generationId).catch(console.error);
@@ -175,20 +187,53 @@ async function processGeneration(id: number) {
 
     const params = JSON.parse(generation.params) as GenerationParams;
 
-    // Get public URLs for the images (in production, use actual URLs)
-    // For now, using file:// URLs (Replicate supports file uploads)
-    const modelImageUrl = `file://${path.resolve(generation.model_image)}`;
-    const garmentImageUrl = `file://${path.resolve(generation.garment_image)}`;
+    // Convert images to data URIs for Replicate API
+    const toDataUri = async (filePath: string): Promise<string> => {
+      const data = await fs.readFile(path.resolve(filePath));
+      const ext = path.extname(filePath).toLowerCase().replace('.', '');
+      const mime = ext === 'jpg' ? 'image/jpeg' : `image/${ext}`;
+      return `data:${mime};base64,${data.toString('base64')}`;
+    };
+
+    // person_description 추출 (background_prompt에서 파싱)
+    let personDescription: string | undefined;
+    let cleanBackgroundPrompt = generation.background_prompt;
+    
+    if (generation.background_prompt) {
+      const match = generation.background_prompt.match(/\[person:\s*([^\]]+)\]/);
+      if (match) {
+        personDescription = match[1];
+        cleanBackgroundPrompt = generation.background_prompt.replace(/\[person:\s*[^\]]+\]/, '').trim();
+      }
+    }
+
+    // 전처리: 모델 이미지에서 사람 감지 및 크롭
+    let processedModelImage: string;
+    try {
+      processedModelImage = await preprocessModelImage(generation.model_image, personDescription);
+      console.log(`Preprocessed model image: ${processedModelImage}`);
+    } catch (error) {
+      // 전처리 실패 시 사용자 친화적 에러 메시지
+      const errorMsg = error instanceof Error ? error.message : '이미지 전처리에 실패했습니다.';
+      updateGeneration(id, { 
+        status: 'failed',
+        error: errorMsg,
+      });
+      return;
+    }
+
+    const modelImageUrl = await toDataUri(processedModelImage);
+    const garmentImageUrl = await toDataUri(generation.garment_image);
     const backgroundImageUrl = generation.background_image 
-      ? `file://${path.resolve(generation.background_image)}` 
+      ? await toDataUri(generation.background_image) 
       : undefined;
 
-    // Run VTON
+    // Run VTON (cleanBackgroundPrompt 사용)
     const { id: replicateId } = await runVTON({
       modelImageUrl,
       garmentImageUrl,
       backgroundImageUrl,
-      backgroundPrompt: generation.background_prompt || undefined,
+      backgroundPrompt: cleanBackgroundPrompt || undefined,
       params,
     });
 
@@ -220,9 +265,14 @@ async function processGeneration(id: number) {
         });
         break;
       } else if (prediction.status === 'failed') {
+        const errMsg = prediction.error?.toString() || 'Unknown error';
+        let userMsg = errMsg;
+        if (errMsg.includes('list index out of range')) {
+          userMsg = '모델 사진에서 사람을 감지하지 못했습니다. 한 명의 사람이 잘 보이는 상반신/전신 사진을 사용해주세요.';
+        }
         updateGeneration(id, { 
           status: 'failed',
-          error: prediction.error?.toString() || 'Unknown error',
+          error: userMsg,
         });
         break;
       }
